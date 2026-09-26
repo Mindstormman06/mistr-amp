@@ -1432,6 +1432,22 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable
         LoadCurrent();
     }
 
+    public void PlayDroppedFiles(IReadOnlyList<string> filePaths)
+    {
+        if (filePaths.Count == 0)
+            return;
+
+        var songs = filePaths.Select(LibraryScanner.ReadSong).ToList();
+        _queue.PlayFromLibrary(songs[0], songs, false);
+        StartNormalizationWarmup();
+        LoadCurrent();
+    }
+
+    public void PlayDroppedFile(string filePath)
+    {
+        PlayDroppedFiles([filePath]);
+    }
+
     [RelayCommand]
     private void JumpToQueueRow(SongRow row)
     {

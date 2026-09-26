@@ -151,6 +151,8 @@ public partial class MainWindow : Window
             OnRightSplitterDragCompleted(sender, e);
         };
 
+        AddHandler(DragDrop.DropEvent, OnFileDrop);
+
         Opened += (_, _) =>
         {
             StartFrameLoop();
@@ -169,6 +171,28 @@ public partial class MainWindow : Window
         };
         PropertyChanged += OnWindowPropertyChanged;
         DataContextChanged += OnDataContextChanged;
+    }
+
+    private void OnFileDrop(object? sender, DragEventArgs e)
+    {
+        var files = e.DataTransfer.TryGetFiles();
+        if (files is not null)
+        {
+            var paths = new List<string>();
+            foreach (var file in files)
+            {
+                var path = file.TryGetLocalPath();
+                if (path != null && File.Exists(path))
+                {
+                    paths.Add(path);
+                }
+            }
+
+            if (paths.Count > 0 && ViewModel is { } vm)
+            {
+                vm.PlayDroppedFiles(paths);
+            }
+        }
     }
 
     private void StartFrameLoop()
