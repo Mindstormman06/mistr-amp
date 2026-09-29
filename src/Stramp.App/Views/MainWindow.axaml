@@ -1057,6 +1057,42 @@
                                                     ContentTemplate="{StaticResource ColorEditorTemplate}" />
                                 </StackPanel>
                             </StackPanel>
+
+                            <TextBlock Text="LISTENING TIME" Classes="section-header" Margin="0,6,0,0" />
+
+                            <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
+                                <Border Classes="library-locations" Padding="14,12">
+                                    <StackPanel Spacing="4">
+                                        <TextBlock Text="Total Time Listened" Classes="field-label" FontSize="11" Opacity="0.6" />
+                                        <TextBlock Text="{Binding TotalTimeListenedText}" FontSize="18" FontWeight="SemiBold"
+                                                   ToolTip.Tip="{Binding TotalTimeListenedTooltip}" />
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="1" Classes="library-locations" Padding="14,12">
+                                    <StackPanel Spacing="4">
+                                        <TextBlock Text="Time Listened This Month" Classes="field-label" FontSize="11" Opacity="0.6" />
+                                        <TextBlock Text="{Binding MonthlyTimeListenedText}" FontSize="18" FontWeight="SemiBold"
+                                                   ToolTip.Tip="{Binding MonthlyTimeListenedTooltip}" />
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+
+                            <Border Classes="library-locations" Padding="12,10" Margin="0,-6,0,0">
+                                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                                    <StackPanel Grid.Column="0" Spacing="2" VerticalAlignment="Center">
+                                        <TextBlock Text="Listening History Database (.json)" FontSize="12" FontWeight="SemiBold"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{Binding ListeningHistoryFilePath}" Classes="field-hint"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip.Tip="{Binding ListeningHistoryFilePath}" />
+                                    </StackPanel>
+                                    <Button Grid.Column="1" Classes="transport" Padding="8,4" Height="28"
+                                            Click="OnOpenListeningHistoryClicked"
+                                            ToolTip.Tip="Open listening history JSON in Windows File Explorer">
+                                        <TextBlock Text="Reveal" FontSize="11" />
+                                    </Button>
+                                </Grid>
+                            </Border>
                         </StackPanel>
                     </ScrollViewer>
                 </DockPanel>

@@ -1177,6 +1177,42 @@ public partial class MainWindow : Window
         }
     }
 
+    private void OnOpenListeningHistoryClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        var filePath = ViewModel?.ListeningHistoryFilePath;
+        if (string.IsNullOrEmpty(filePath))
+            return;
+
+        try
+        {
+            var dir = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+
+            if (File.Exists(filePath))
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "explorer.exe",
+                    Arguments = $"/select,\"{filePath}\"",
+                    UseShellExecute = true,
+                });
+            }
+            else if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = dir,
+                    UseShellExecute = true,
+                    Verb = "open",
+                });
+            }
+        }
+        catch
+        {
+        }
+    }
+
     private async void OnImportPlaylistClicked(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions

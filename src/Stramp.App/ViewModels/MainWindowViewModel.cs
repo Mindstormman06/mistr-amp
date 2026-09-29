@@ -50,6 +50,11 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable
     private DateTime _lastPlaybackStateSaveUtc = DateTime.MinValue;
     private bool _playbackStateReady;
     private bool _disposed;
+    private readonly object _listeningStatsLock = new();
+    private readonly Stopwatch _listeningStopwatch = new();
+    private DateTime _lastListeningSaveUtc = DateTime.UtcNow;
+    private readonly ListeningHistoryStore _listeningHistoryStore;
+    private readonly ListeningHistoryDatabase _listeningHistory;
 
     /// <summary>Songs of the selected source (All Songs or a playlist) — what the queue is built from.</summary>
     private List<Song> _activeSongs = [];
@@ -275,23 +280,64 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable
     [ObservableProperty]
     public partial string? StandaloneNewPlaylistError { get; set; }
 
+    [ObservableProperty]
+    public partial string TotalTimeListenedText { get; set; } = "0s";
+
+    [ObservableProperty]
+    public partial string MonthlyTimeListenedText { get; set; } = "0s";
+
+    [ObservableProperty]
+    public partial string TotalTimeListenedTooltip { get; set; } = "";
+
+    [ObservableProperty]
+    public partial string MonthlyTimeListenedTooltip { get; set; } = "";
+
     public AudioVisualizerFeed VisualizerFeed { get; } = new();
 
     public AppSettings Settings => _settings;
 
     public ThemeSettingsViewModel Theme { get; }
 
+    public string ListeningHistoryFilePath => _listeningHistoryStore.FilePath;
+
     public MainWindowViewModel() : this(new WasapiMediaPlayer(), SettingsService.Load())
     {
     }
 
     public MainWindowViewModel(
-        IMediaPlayer player, AppSettings settings, PlaybackStateStore? playbackStateStore = null)
+        IMediaPlayer player, AppSettings settings, PlaybackStateStore? playbackStateStore = null,
+        ListeningHistoryStore? listeningHistoryStore = null)
     {
         _player = player;
         _settings = settings;
         _playbackStateStore = playbackStateStore ?? new PlaybackStateStore();
+        _listeningHistoryStore = listeningHistoryStore ?? new ListeningHistoryStore();
+        _listeningHistory = _listeningHistoryStore.Load();
         _savedPlaybackState = _playbackStateStore.Load();
+
+        if (_listeningHistory.TotalSecondsListened == 0 && _settings.TotalListenedSeconds > 0)
+        {
+            _listeningHistory.TotalSecondsListened = _settings.TotalListenedSeconds;
+            _listeningHistory.FormattedTotalTime = ListeningDurationFormatter.Format(_listeningHistory.TotalSecondsListened);
+            foreach (var kvp in _settings.MonthlyListenedSeconds)
+            {
+                if (!_listeningHistory.Months.ContainsKey(kvp.Key))
+                {
+                    var displayName = DateTime.TryParseExact(kvp.Key, "yyyy-MM", null, System.Globalization.DateTimeStyles.None, out var dt)
+                        ? dt.ToString("MMMM yyyy")
+                        : kvp.Key;
+
+                    _listeningHistory.Months[kvp.Key] = new MonthlyListeningRecord
+                    {
+                        Month = kvp.Key,
+                        DisplayName = displayName,
+                        SecondsListened = kvp.Value,
+                        FormattedTime = ListeningDurationFormatter.Format(kvp.Value)
+                    };
+                }
+            }
+            _listeningHistoryStore.Save(_listeningHistory);
+        }
 
         Shuffled = settings.Shuffle;
         LoopMode = settings.LoopMode;
@@ -340,6 +386,7 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable
         _player.PlaybackEnded += OnPlaybackEnded;
 
         EnsurePlaylistsOnDisk();
+        UpdateListeningStatsDisplay();
 
         if (_libraryPaths.Any(Directory.Exists))
             _ = ReloadLibraryAsync(restorePlaybackState: true, preservePlayback: false);
@@ -960,16 +1007,12 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable
             return;
 
         if (item.IsAlreadyAdded)
-        {
-            StatusText = $"'{_targetSongForPlaylist.Title}' is already in {item.Name}";
             return;
-        }
 
         AddSongToPlaylistCore(item.Name, _targetSongForPlaylist, item.FilePath);
         item.IsAlreadyAdded = true;
         item.IsJustAdded = true;
         item.SongCount++;
-        StatusText = $"Added '{_targetSongForPlaylist.Title}' to {item.Name}";
     }
 
     [RelayCommand]
@@ -1010,7 +1053,6 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable
         var m3u8Path = DetermineM3u8Path(name);
         AddSongToPlaylistCore(name, _targetSongForPlaylist, m3u8Path);
 
-        StatusText = $"Created playlist '{name}' with '{_targetSongForPlaylist.Title}'";
         IsAddToPlaylistOpen = false;
     }
 
@@ -1521,10 +1563,17 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable
 
     private void StartPlaybackNow(string path)
     {
+        AccrueListeningTime();
+        lock (_listeningStatsLock)
+        {
+            _listeningHistory.RecordTrackPlay(_queue.Current);
+        }
         _pendingPlaybackPath = null;
         _player.Play(path);
         _playerHasCurrentTrack = true;
         IsPlaying = true;
+        if (!_listeningStopwatch.IsRunning)
+            _listeningStopwatch.Restart();
         if (_resumePositionSeconds > 0)
         {
             _player.Seek(_resumePositionSeconds);
@@ -1662,13 +1711,23 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable
     }
 
     [RelayCommand]
-    private void OpenSettings() => IsSettingsOpen = true;
+    private void OpenSettings()
+    {
+        AccrueListeningTime();
+        UpdateListeningStatsDisplay();
+        IsSettingsOpen = true;
+    }
 
     [RelayCommand]
     private void CloseSettings()
     {
         IsSettingsOpen = false;
+        AccrueListeningTime();
         Theme.SaveToDisk();
+        lock (_listeningStatsLock)
+        {
+            _listeningHistoryStore.Save(_listeningHistory);
+        }
     }
 
     private void ApplyEffects() =>
@@ -1992,7 +2051,15 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable
             string.IsNullOrWhiteSpace(right) ? null : right,
             StringComparison.OrdinalIgnoreCase);
 
-    public void BeginSeek() => _isSeeking = true;
+    public void BeginSeek()
+    {
+        if (!_isSeeking)
+        {
+            AccrueListeningTime();
+            _listeningStopwatch.Reset();
+        }
+        _isSeeking = true;
+    }
 
     /// <summary>Scrub to a 0-1 position without committing the seek yet (drag in progress).</summary>
     public void ScrubTo(double fraction)
@@ -2024,6 +2091,8 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable
         ProgressSeconds = seconds;
         _reportedPosition = seconds;
         _sincePositionReport.Restart();
+        if (IsPlaying)
+            _listeningStopwatch.Restart();
         UpdateDiscordPresence();
         SavePlaybackState(force: true);
     }
@@ -2041,6 +2110,9 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable
         var estimated = Math.Min(_reportedPosition + _sincePositionReport.Elapsed.TotalSeconds, DurationSeconds);
         ProgressSeconds = estimated;
         ElapsedText = FormatTime(estimated);
+
+        if (_listeningStopwatch.IsRunning && _listeningStopwatch.Elapsed >= TimeSpan.FromSeconds(1))
+            AccrueListeningTime();
     }
 
     private void LoadCurrent(bool autoPlay = true, double resumePositionSeconds = 0)
@@ -2326,6 +2398,80 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable
         // Just re-anchor the interpolation baseline; TickProgress does the actual UI updating.
         _reportedPosition = seconds;
         _sincePositionReport.Restart();
+
+        if (IsPlaying && _listeningStopwatch.IsRunning && _listeningStopwatch.Elapsed >= TimeSpan.FromSeconds(1))
+            AccrueListeningTime();
+    }
+
+    partial void OnIsPlayingChanged(bool value)
+    {
+        if (value)
+        {
+            if (!_isSeeking)
+                _listeningStopwatch.Restart();
+        }
+        else
+        {
+            AccrueListeningTime();
+            _listeningStopwatch.Reset();
+            SettingsService.Save(_settings);
+            lock (_listeningStatsLock)
+            {
+                _listeningHistoryStore.Save(_listeningHistory);
+            }
+        }
+    }
+
+    private void AccrueListeningTime()
+    {
+        lock (_listeningStatsLock)
+        {
+            if (!_listeningStopwatch.IsRunning)
+                return;
+
+            var elapsed = _listeningStopwatch.Elapsed.TotalSeconds;
+            _listeningStopwatch.Restart();
+
+            if (elapsed <= 0)
+                return;
+
+            var currentSong = _queue.Current;
+            _settings.AddListeningTime(elapsed);
+            _listeningHistory.AddListeningTime(elapsed, currentSong);
+
+            if (DateTime.UtcNow - _lastListeningSaveUtc >= TimeSpan.FromSeconds(30))
+            {
+                _lastListeningSaveUtc = DateTime.UtcNow;
+                SettingsService.Save(_settings);
+                _listeningHistoryStore.Save(_listeningHistory);
+            }
+        }
+
+        if (IsSettingsOpen)
+        {
+            if (Dispatcher.UIThread.CheckAccess())
+                UpdateListeningStatsDisplay();
+            else
+                Dispatcher.UIThread.Post(UpdateListeningStatsDisplay);
+        }
+    }
+
+    private void UpdateListeningStatsDisplay()
+    {
+        double totalSec;
+        double monthSec;
+        lock (_listeningStatsLock)
+        {
+            totalSec = Math.Max(_settings.TotalListenedSeconds, _listeningHistory.TotalSecondsListened);
+            monthSec = Math.Max(_settings.GetCurrentMonthListenedSeconds(), _listeningHistory.GetCurrentMonthSeconds());
+        }
+
+        TotalTimeListenedText = ListeningDurationFormatter.Format(totalSec);
+        TotalTimeListenedTooltip = ListeningDurationFormatter.FormatTooltip(totalSec, "Total time listened");
+
+        MonthlyTimeListenedText = ListeningDurationFormatter.Format(monthSec);
+        var currentMonthName = DateTime.Now.ToString("MMMM yyyy");
+        MonthlyTimeListenedTooltip = ListeningDurationFormatter.FormatTooltip(monthSec, currentMonthName);
     }
 
     private void OnPlaybackEnded()
@@ -2371,6 +2517,12 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable
         if (_disposed)
             return;
 
+        AccrueListeningTime();
+        SettingsService.Save(_settings);
+        lock (_listeningStatsLock)
+        {
+            _listeningHistoryStore.Save(_listeningHistory);
+        }
         SavePlaybackState(force: true);
         _disposed = true;
         _libraryScanCts?.Cancel();

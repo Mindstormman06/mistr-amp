@@ -106,4 +106,35 @@ public sealed class AppSettings
     public double SurroundAmount { get; set; }
     public double DynamicBoostAmount { get; set; }
     public double BassBoostAmount { get; set; }
+
+    /// <summary>Total seconds of music listened to across all time.</summary>
+    public double TotalListenedSeconds { get; set; }
+
+    private Dictionary<string, double>? _monthlyListenedSeconds;
+
+    /// <summary>Monthly listened seconds keyed by "yyyy-MM" (e.g. "2026-09").</summary>
+    public Dictionary<string, double> MonthlyListenedSeconds
+    {
+        get => _monthlyListenedSeconds ??= [];
+        set => _monthlyListenedSeconds = value ?? [];
+    }
+
+    public double GetCurrentMonthListenedSeconds(DateTime? now = null)
+    {
+        var key = (now ?? DateTime.Now).ToString("yyyy-MM");
+        return MonthlyListenedSeconds.TryGetValue(key, out var seconds) ? seconds : 0;
+    }
+
+    public void AddListeningTime(double seconds, DateTime? now = null)
+    {
+        if (seconds <= 0)
+            return;
+
+        TotalListenedSeconds += seconds;
+        var key = (now ?? DateTime.Now).ToString("yyyy-MM");
+        if (MonthlyListenedSeconds.TryGetValue(key, out var current))
+            MonthlyListenedSeconds[key] = current + seconds;
+        else
+            MonthlyListenedSeconds[key] = seconds;
+    }
 }
